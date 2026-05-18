@@ -1,3 +1,13 @@
+// WATERMARK:eyJkYXRhIjp7Im93bmVyIjoiS29zZWEgRXJhc3RvIChrbXV3YW5nYTgzKSIsImNvbXBhbnkiOiJLYXppU01TIiwiY29weXJpZ2h0IjoiMjAyNCIsImxpY2Vuc2UiOiJQcm9wcmlldGFyeSAtIEFsbCBSaWdodHMgUmVzZXJ2ZWQiLCJyZWdpc3RyYXRpb24iOiJVUlNCLUMtMjAyNC0wMDEiLCJ1bmlxdWVfaWQiOiJlYmRjN2I1MjUxYmUzNmU1MGNjNTlmYzk5MjVjZjQ0ZSJ9LCJ0aW1lc3RhbXAiOjE3NzkwOTY5ODE0NjgsInNpZ25hdHVyZSI6ImU3MmM0ODNhMGU3MjVjOWFjNGRiY2FkMDEyNzFmMGE5NzRkZDViZTBjMjUzYzUyOTcwYjliZWVhMWVkYzdmOTUiLCJ2ZXJzaW9uIjoiMi4wIn0=
+/**
+ * Copyright (c) 2024 KaziSMS. All Rights Reserved.
+ * 
+ * Database schema design and relationships are proprietary.
+ * Unauthorized copying or reproduction is prohibited.
+ * 
+ * @author Kosea Erasto
+ * @copyright 2024 KaziSMS
+ */
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 
