@@ -1,8 +1,10 @@
 const smpp = require('smpp');
 const EventEmitter = require('events');
 const crypto = require('crypto');
+const axios = require('axios');
 const { SMSCDatabase } = require('./database');
 const { CarrierRouter } = require('./carrierRouter');
+const { getCarrierInfo } = require('../utils/phone');
 
 class SMSCServer extends EventEmitter {
     constructor(config) {
@@ -21,6 +23,21 @@ class SMSCServer extends EventEmitter {
         this.carrierRouter = new CarrierRouter();
         this.messageQueue = [];
         this.processing = false;
+        this.autoReplyRules = new Map();
+        
+        this.loadAutoReplyRules();
+    }
+
+    async loadAutoReplyRules() {
+        try {
+            const rules = await this.db.getAutoReplyRules();
+            rules.forEach(rule => {
+                this.autoReplyRules.set(rule.keyword.toLowerCase(), rule);
+            });
+            console.log(`✅ Loaded ${this.autoReplyRules.size} auto-reply rules`);
+        } catch (error) {
+            console.error('Failed to load auto-reply rules:', error.message);
+        }
     }
 
     start() {
@@ -36,6 +53,8 @@ class SMSCServer extends EventEmitter {
             console.log(`╠═══════════════════════════════════════════════════════╣`);
             console.log(`║  📡 Host: ${this.config.host}:${this.config.port}                              ║`);
             console.log(`║  💾 Database: SMSC database ready                     ║`);
+            console.log(`║  📨 Two-Way SMS: ENABLED                              ║`);
+            console.log(`║  🤖 Auto-Reply: Active                                ║`);
             console.log(`║  🔑 Issue your own credentials to clients!           ║`);
             console.log(`╚═══════════════════════════════════════════════════════╝\n`);
         });
@@ -63,6 +82,10 @@ class SMSCServer extends EventEmitter {
 
         session.on('submit_sm', (pdu) => {
             this.handleSubmitSM(session, sessionId, pdu);
+        });
+
+        session.on('deliver_sm', (pdu) => {
+            this.handleDeliverSM(session, sessionId, pdu);
         });
 
         session.on('enquire_link', (pdu) => {
@@ -114,7 +137,6 @@ class SMSCServer extends EventEmitter {
 
         const { source_addr, destination_addr, short_message } = pdu;
         
-        // Convert short_message from Buffer to String
         let messageText = short_message;
         if (Buffer.isBuffer(short_message)) {
             messageText = short_message.toString('utf8');
@@ -124,7 +146,7 @@ class SMSCServer extends EventEmitter {
         
         const messageId = this.generateMessageId();
         
-        console.log(`\n📨 Received SMS from ${sessionData.system_id}:`);
+        console.log(`\n📤 OUTGOING SMS from ${sessionData.system_id}:`);
         console.log(`   From: ${source_addr}`);
         console.log(`   To: ${destination_addr}`);
         console.log(`   Message: ${messageText.substring(0, 50)}${messageText.length > 50 ? '...' : ''}`);
@@ -145,14 +167,12 @@ class SMSCServer extends EventEmitter {
             console.error('Database save error:', dbError.message);
         }
 
-        // Send response IMMEDIATELY
         const response = pdu.response();
         response.message_id = messageId;
         session.send(response);
         
-        console.log(`✅ Message ${messageId} queued, response sent to client`);
+        console.log(`✅ Message ${messageId} queued`);
 
-        // Add to queue for async processing
         const carrier = this.carrierRouter.getCarrier(destination_addr);
         this.messageQueue.push({
             messageId,
@@ -160,15 +180,160 @@ class SMSCServer extends EventEmitter {
             from: source_addr,
             message: messageText,
             carrier,
-            clientId: sessionData.system_id
+            clientId: sessionData.system_id,
+            isReply: false
         });
 
         sessionData.message_count++;
         
-        // Process queue asynchronously
         setImmediate(() => {
             this.processQueue();
         });
+    }
+
+    async handleDeliverSM(session, sessionId, pdu) {
+        const { source_addr, destination_addr, short_message, esm_class } = pdu;
+        
+        if (esm_class === 0x04) {
+            this.handleDeliveryReceipt(pdu);
+            return;
+        }
+        
+        let messageText = short_message;
+        if (Buffer.isBuffer(short_message)) {
+            messageText = short_message.toString('utf8');
+        } else if (typeof short_message !== 'string') {
+            messageText = String(short_message);
+        }
+        
+        const messageId = 'IN_' + Date.now() + '_' + crypto.randomBytes(4).toString('hex');
+        const carrier = this.carrierRouter.getCarrier(source_addr);
+        
+        console.log(`\n📨 INCOMING SMS RECEIVED:`);
+        console.log(`   From: ${source_addr}`);
+        console.log(`   To: ${destination_addr}`);
+        console.log(`   Message: ${messageText}`);
+        console.log(`   Carrier: ${carrier.name}`);
+        
+        const incomingMessage = {
+            message_id: messageId,
+            from_number: source_addr,
+            to_number: destination_addr,
+            message: messageText,
+            carrier: carrier.name,
+            status: 'received'
+        };
+        
+        try {
+            await this.db.saveIncomingMessage(incomingMessage);
+            console.log(`✅ Incoming message ${messageId} saved`);
+            
+            const autoReply = await this.checkAutoReplyRules(source_addr, messageText, messageId);
+            
+            if (autoReply) {
+                console.log(`🤖 Auto-reply sent to ${source_addr}`);
+            }
+            
+            await this.triggerIncomingWebhook({
+                id: messageId,
+                from: source_addr,
+                to: destination_addr,
+                message: messageText,
+                carrier: carrier.name,
+                timestamp: new Date().toISOString(),
+                auto_replied: !!autoReply
+            });
+            
+        } catch (error) {
+            console.error('Failed to save incoming message:', error.message);
+        }
+        
+        const response = pdu.response();
+        session.send(response);
+    }
+
+    handleDeliveryReceipt(pdu) {
+        let receiptText = pdu.short_message;
+        if (Buffer.isBuffer(receiptText)) {
+            receiptText = receiptText.toString('utf8');
+        }
+        
+        console.log(`📬 Delivery Receipt: ${receiptText}`);
+        
+        const match = receiptText.match(/id:(\S+)\s+stat:(\S+)/);
+        if (match) {
+            const messageId = match[1];
+            const status = match[2];
+            const deliveryStatus = this.mapDeliveryStatus(status);
+            console.log(`   Message ${messageId} status: ${deliveryStatus}`);
+            this.db.updateMessageStatus(messageId, deliveryStatus);
+        }
+    }
+
+    async checkAutoReplyRules(fromNumber, message, originalMessageId) {
+        const lowerMessage = message.toLowerCase();
+        
+        for (const [keyword, rule] of this.autoReplyRules) {
+            if (rule.enabled && lowerMessage.includes(keyword)) {
+                console.log(`🤖 Auto-reply triggered for keyword: ${keyword}`);
+                
+                const replyId = 'REPLY_' + Date.now() + '_' + crypto.randomBytes(4).toString('hex');
+                const replyMessage = rule.response;
+                
+                this.messageQueue.push({
+                    messageId: replyId,
+                    to: fromNumber,
+                    from: this.config.systemId,
+                    message: replyMessage,
+                    carrier: this.carrierRouter.getCarrier(fromNumber),
+                    clientId: 'auto_reply',
+                    isReply: true,
+                    originalMessageId: originalMessageId
+                });
+                
+                setImmediate(() => {
+                    this.processQueue();
+                });
+                
+                await this.db.markIncomingProcessed(originalMessageId, replyId);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    async triggerIncomingWebhook(data) {
+        const webhookUrl = process.env.INCOMING_WEBHOOK_URL;
+        if (!webhookUrl) return;
+        
+        try {
+            await axios.post(webhookUrl, {
+                event: 'sms.received',
+                data: data
+            }, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Webhook-Source': 'KaziSMS-SMSC'
+                },
+                timeout: 5000
+            });
+            console.log(`✅ Webhook sent`);
+        } catch (error) {
+            console.error(`❌ Webhook failed:`, error.message);
+        }
+    }
+
+    mapDeliveryStatus(smppStatus) {
+        const statusMap = {
+            'DELIVRD': 'delivered',
+            'EXPIRED': 'expired',
+            'DELETED': 'deleted',
+            'UNDELIV': 'undeliverable',
+            'ACCEPTD': 'accepted',
+            'REJECTD': 'rejected',
+            'PENDING': 'pending'
+        };
+        return statusMap[smppStatus] || 'unknown';
     }
 
     async processQueue() {
@@ -180,8 +345,18 @@ class SMSCServer extends EventEmitter {
             
             try {
                 await this.sleep(50);
-                await this.db.updateMessageStatus(msg.messageId, 'sent');
-                console.log(`✅ Message ${msg.messageId} sent via ${msg.carrier.name}`);
+                
+                if (msg.isReply) {
+                    await this.db.updateMessageStatus(msg.messageId, 'sent');
+                    console.log(`✅ Reply ${msg.messageId} sent to ${msg.to}`);
+                    
+                    if (msg.originalMessageId) {
+                        await this.db.markIncomingProcessed(msg.originalMessageId, msg.messageId);
+                    }
+                } else {
+                    await this.db.updateMessageStatus(msg.messageId, 'sent');
+                    console.log(`✅ Message ${msg.messageId} sent via ${msg.carrier.name}`);
+                }
             } catch (error) {
                 console.error(`❌ Failed to send ${msg.messageId}:`, error.message);
                 await this.db.updateMessageStatus(msg.messageId, 'failed', error.message);
@@ -205,6 +380,7 @@ class SMSCServer extends EventEmitter {
         return {
             sessions: this.sessions.size,
             queueLength: this.messageQueue.length,
+            autoReplyRules: this.autoReplyRules.size,
             clients: Array.from(this.sessions.values()).map(s => ({
                 system_id: s.system_id,
                 message_count: s.message_count,
