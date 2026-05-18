@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Buy SMS Credits - KaziSMS</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 500px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+        .content {
+            padding: 30px;
+        }
+        .balance-card {
+            background: #f0fdf4;
+            border: 1px solid #bbf7d0;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 25px;
+            text-align: center;
+        }
+        .balance-card h3 {
+            color: #166534;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+        .balance-card .amount {
+            font-size: 36px;
+            font-weight: bold;
+            color: #166534;
+        }
+        .balance-card .sms-count {
+            color: #15803d;
+            margin-top: 5px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+        input, select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e5e7eb;
+            border-radius: 10px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        input:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        button {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            display: none;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .footer {
+            background: #f9fafb;
+            padding: 20px;
+            text-align: center;
+            font-size: 12px;
+            color: #6b7280;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>💰 KaziSMS Credits</h1>
+            <p>Buy SMS credits and start sending messages</p>
+        </div>
+        
+        <div class="content">
+            <div class="balance-card" id="balanceCard" style="display: none;">
+                <h3>Your Balance</h3>
+                <div class="amount" id="balanceAmount">0 UGX</div>
+                <div class="sms-count" id="smsCount">0 SMS credits</div>
+            </div>
+            
+            <form id="paymentForm">
+                <div class="form-group">
+                    <label>📱 Phone Number (MTN/Airtel)</label>
+                    <input type="tel" id="phone" placeholder="e.g., 256775951662 or 0775951662" required>
+                </div>
+                
+                <div class="form-group">
+                    <label>💰 Select Amount (UGX)</label>
+                    <select id="amount">
+                        <option value="1000">1,000 UGX (20 SMS) - Most Popular</option>
+                        <option value="5000" selected>5,000 UGX (100 SMS) - Best Value</option>
+                        <option value="10000">10,000 UGX (200 SMS)</option>
+                        <option value="25000">25,000 UGX (500 SMS)</option>
+                        <option value="50000">50,000 UGX (1,000 SMS) - Best Deal</option>
+                    </select>
+                </div>
+                
+                <button type="submit" id="buyBtn">🚀 Buy Credits Now</button>
+            </form>
+            
+            <div id="result" class="result"></div>
+            
+            <div class="info" style="margin-top: 20px; padding: 12px; border-radius: 8px;">
+                <strong>ℹ️ How it works:</strong><br>
+                1. Enter your MTN or Airtel phone number<br>
+                2. Select the amount of credits you want<br>
+                3. You'll receive a payment request on your phone<br>
+                4. Enter your Mobile Money PIN to confirm<br>
+                5. Credits are added instantly to your account!
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>Each SMS costs 50 UGX | 1 credit = 1 SMS | Credits never expire</p>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = window.location.origin;
+        let currentPhone = localStorage.getItem('kazisms_phone') || '';
+        
+        if (currentPhone) {
+            document.getElementById('phone').value = currentPhone;
+            checkBalance(currentPhone);
+        }
+        
+        async function checkBalance(phoneNumber) {
+            try {
+                const response = await fetch(`${API_URL}/api/balance/${phoneNumber}`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    document.getElementById('balanceCard').style.display = 'block';
+                    document.getElementById('balanceAmount').innerHTML = `${data.data.balance.toLocaleString()} UGX`;
+                    document.getElementById('smsCount').innerHTML = `${data.data.sms_credits.toLocaleString()} SMS credits remaining`;
+                }
+            } catch (error) {
+                console.error('Balance check error:', error);
+            }
+        }
+        
+        document.getElementById('paymentForm').onsubmit = async (e) => {
+            e.preventDefault();
+            
+            const phone = document.getElementById('phone').value;
+            const amount = parseInt(document.getElementById('amount').value);
+            const resultDiv = document.getElementById('result');
+            const buyBtn = document.getElementById('buyBtn');
+            
+            if (!phone) {
+                showResult('Please enter your phone number', 'error');
+                return;
+            }
+            
+            // Save phone to localStorage
+            localStorage.setItem('kazisms_phone', phone);
+            currentPhone = phone;
+            
+            // Show loading state
+            buyBtn.disabled = true;
+            buyBtn.innerHTML = '<span class="loading"></span> Processing...';
+            resultDiv.style.display = 'none';
+            
+            try {
+                const response = await fetch(`${API_URL}/api/buy-credits`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phoneNumber: phone, amount: amount })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    // Check if it's development mode or production
+                    if (data.note) {
+                        showResult(`✅ ${data.credits} SMS credits added!<br>New balance: ${data.new_balance} UGX`, 'success');
+                        checkBalance(phone);
+                    } else {
+                        showResult(`
+                            ✅ Payment initiated!<br>
+                            Amount: ${data.amount.toLocaleString()} UGX<br>
+                            Credits: ${data.credits} SMS<br>
+                            Reference: ${data.reference}<br><br>
+                            <strong>📱 Check your phone now!</strong><br>
+                            ${data.message || 'Enter your Mobile Money PIN to complete the payment.'}
+                        `, 'success');
+                    }
+                } else {
+                    showResult(`❌ Error: ${data.error.message || data.error}`, 'error');
+                }
+            } catch (error) {
+                showResult(`❌ Connection error: ${error.message}`, 'error');
+            } finally {
+                buyBtn.disabled = false;
+                buyBtn.innerHTML = '🚀 Buy Credits Now';
+            }
+        };
+        
+        function showResult(message, type) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = message;
+            resultDiv.className = `result ${type}`;
+            resultDiv.style.display = 'block';
+            
+            setTimeout(() => {
+                if (type !== 'error') {
+                    setTimeout(() => {
+                        resultDiv.style.display = 'none';
+                    }, 5000);
+                }
+            }, 100);
+        }
+        
+        // Auto-refresh balance every 30 seconds
+        if (currentPhone) {
+            setInterval(() => {
+                checkBalance(currentPhone);
+            }, 30000);
+        }
+    </script>
+</body>
+</html>
