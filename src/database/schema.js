@@ -76,3 +76,5 @@ const dbHelpers = {
 };
 
 module.exports = { initDatabase, dbHelpers };
+// Add at the end of src/database/schema.js
+module.exports = { initDatabase, dbHelpers, db };
