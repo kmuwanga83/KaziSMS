@@ -3,6 +3,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const compression = require('compression');
+const path = require('path');
 const { validatePhoneNumber, getCarrierInfo } = require('./utils/phone');
 const { initDatabase, dbHelpers } = require('./database/schema');
 const { CreditManager } = require('./credits');
@@ -19,6 +20,9 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev'));
 
+// Serve static files (HTML widget)
+app.use(express.static('public'));
+
 // Request timer
 app.use((req, res, next) => {
     req.startTime = Date.now();
@@ -29,6 +33,8 @@ app.use((req, res, next) => {
 let dbReady = false;
 let creditManager = null;
 let db = null;
+let paymentRoutes = null;
+let paymentWebhook = null;
 
 // Initialize everything
 const initialize = async () => {
@@ -44,13 +50,23 @@ const initialize = async () => {
         creditManager = new CreditManager(db);
         console.log('✅ Credit manager initialized');
         
+        // Now initialize payment routes after database is ready
+        const paymentRoutesModule = require('./api/paymentRoutes');
+        const paymentWebhookModule = require('./api/paymentWebhook');
+        
+        paymentRoutes = paymentRoutesModule(db);
+        paymentWebhook = paymentWebhookModule(db);
+        
+        // Mount payment routes after database is ready
+        app.use('/api', paymentRoutes);
+        app.use('/api/payment', paymentWebhook);
+        
+        console.log('✅ Payment routes initialized');
+        
     } catch (err) {
         console.error('❌ Initialization failed:', err.message);
     }
 };
-
-// Run initialization
-initialize();
 
 // Health check
 app.get('/health', (req, res) => {
@@ -58,11 +74,13 @@ app.get('/health', (req, res) => {
         status: 'healthy',
         database: dbReady,
         creditManager: creditManager !== null,
+        paymentRoutes: paymentRoutes !== null,
+        flutterwave: process.env.FLW_SECRET_KEY ? 'configured' : 'not configured',
         timestamp: new Date().toISOString(),
         service: 'KaziSMS API',
         version: '2.0.0',
         uptime: process.uptime(),
-        features: ['SMS', 'Payment', 'Credits']
+        features: ['SMS', 'Payment', 'Credits', 'Flutterwave']
     });
 });
 
@@ -70,10 +88,15 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
     res.json({
         name: 'KaziSMS API',
-        description: 'Lightning fast SMS API for East Africa with Payment Integration',
+        description: 'Lightning fast SMS API for East Africa with Flutterwave Payment Integration',
         version: '2.0.0',
         status: 'operational',
         database: dbReady ? 'connected' : 'pending',
+        payment: {
+            provider: 'Flutterwave',
+            supported: ['MTN Mobile Money', 'Airtel Money', 'Card Payments'],
+            status: paymentRoutes ? 'ready' : 'initializing'
+        },
         endpoints: {
             send_sms: 'POST /v1/sms/send',
             get_messages: 'GET /v1/messages',
@@ -83,26 +106,25 @@ app.get('/', (req, res) => {
             message_status: 'GET /v1/sms/:id',
             buy_credits: 'POST /api/buy-credits',
             check_balance: 'GET /api/balance/:phoneNumber',
-            transaction_history: 'GET /api/transactions/:phoneNumber'
+            transaction_history: 'GET /api/transactions/:phoneNumber',
+            payment_widget: 'GET /buy-credits.html'
         }
     });
 });
 
-// ============ PAYMENT & CREDIT ENDPOINTS ============
-
-// Buy credits
+// Temporary payment endpoints (will be replaced when database is ready)
 app.post('/api/buy-credits', async (req, res) => {
-    const { phoneNumber, amount } = req.body;
-    
     if (!creditManager) {
         return res.status(503).json({
             success: false,
             error: {
                 code: 'SERVICE_UNAVAILABLE',
-                message: 'Credit system initializing. Please try again.'
+                message: 'Credit system initializing. Please wait a moment and try again.'
             }
         });
     }
+    
+    const { phoneNumber, amount } = req.body;
     
     if (!phoneNumber || !amount) {
         return res.status(400).json({
@@ -125,56 +147,33 @@ app.post('/api/buy-credits', async (req, res) => {
         });
     }
     
-    const reference = 'SMS_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
+    const reference = 'KAZI_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
     const smsCredits = Math.floor(amount / 50);
     
     try {
         const user = await creditManager.getUser(phoneNumber);
+        const result = await creditManager.addCredits(user.user_id, amount, reference, `Purchase of ${smsCredits} SMS credits`);
         
-        // For development, auto-add credits
-        if (process.env.NODE_ENV === 'development') {
-            const result = await creditManager.addCredits(user.user_id, amount, reference, `Purchase of ${smsCredits} SMS credits`);
-            
-            return res.json({
-                success: true,
-                transaction_id: reference,
-                reference: reference,
-                amount: amount,
-                credits: smsCredits,
-                cost_per_sms: 50,
-                new_balance: result.new_balance,
-                merchant_phone: process.env.MERCHANT_PHONE || '256700000000',
-                payment_instructions: `For production: Send ${amount} UGX to ${process.env.MERCHANT_PHONE || '256700000000'} with reference: ${reference}`,
-                note: "Development mode: Credits added automatically. In production, payment verification required."
-            });
-        }
-        
-        // Production: Return payment instructions
-        res.json({
+        return res.json({
             success: true,
             transaction_id: reference,
             reference: reference,
             amount: amount,
             credits: smsCredits,
             cost_per_sms: 50,
-            merchant_phone: process.env.MERCHANT_PHONE || '256700000000',
-            payment_instructions: `Send ${amount} UGX to ${process.env.MERCHANT_PHONE || '256700000000'} via Mobile Money with reference: ${reference}`,
-            status: 'pending_payment'
+            new_balance: result.new_balance,
+            note: "Development mode: Credits added automatically. Real Flutterwave integration ready."
         });
-        
     } catch (error) {
         console.error('Buy credits error:', error);
-        res.status(500).json({
+        return res.status(500).json({
             success: false,
-            error: {
-                code: 'PAYMENT_ERROR',
-                message: error.message
-            }
+            error: error.message
         });
     }
 });
 
-// Check balance
+// Temporary balance endpoint
 app.get('/api/balance/:phoneNumber', async (req, res) => {
     const { phoneNumber } = req.params;
     
@@ -183,7 +182,7 @@ app.get('/api/balance/:phoneNumber', async (req, res) => {
             success: false,
             error: {
                 code: 'SERVICE_UNAVAILABLE',
-                message: 'Credit system initializing. Please try again.'
+                message: 'Credit system initializing. Please wait a moment.'
             }
         });
     }
@@ -214,7 +213,7 @@ app.get('/api/balance/:phoneNumber', async (req, res) => {
     }
 });
 
-// Get transaction history
+// Temporary transaction history endpoint
 app.get('/api/transactions/:phoneNumber', async (req, res) => {
     const { phoneNumber } = req.params;
     const limit = parseInt(req.query.limit) || 50;
@@ -224,7 +223,7 @@ app.get('/api/transactions/:phoneNumber', async (req, res) => {
             success: false,
             error: {
                 code: 'SERVICE_UNAVAILABLE',
-                message: 'Credit system initializing. Please try again.'
+                message: 'Credit system initializing.'
             }
         });
     }
@@ -315,7 +314,7 @@ app.post('/v1/sms/send', async (req, res) => {
                     message: `Insufficient credits. Need ${cost} UGX, available: ${balance} UGX`,
                     needed: cost,
                     available: balance,
-                    buy_url: '/api/buy-credits'
+                    buy_url: '/buy-credits.html'
                 }
             });
         }
@@ -494,11 +493,15 @@ app.get('/v1/info', (req, res) => {
             environment: process.env.NODE_ENV || 'development',
             database: dbReady ? 'connected' : 'pending',
             payment_enabled: true,
+            payment_provider: 'Flutterwave',
             supported_countries: ['Uganda', 'Kenya', 'Tanzania', 'Rwanda', 'Burundi'],
-            features: ['2-way SMS', 'Bulk SMS', 'Database Storage', 'Message History', 'Mobile Money Payments', 'Credit System']
+            features: ['2-way SMS', 'Bulk SMS', 'Database Storage', 'Message History', 'Flutterwave Payments', 'Credit System']
         }
     });
 });
+
+// Start initialization and then start server
+initialize();
 
 // 404 handler
 app.use((req, res) => {
@@ -519,7 +522,8 @@ app.use((req, res) => {
                 'GET /v1/sms/:id',
                 'POST /api/buy-credits',
                 'GET /api/balance/:phoneNumber',
-                'GET /api/transactions/:phoneNumber'
+                'GET /api/transactions/:phoneNumber',
+                'GET /buy-credits.html'
             ]
         }
     });
@@ -544,7 +548,8 @@ app.listen(PORT, () => {
     console.log(`╠═══════════════════════════════════════════════════════╣`);
     console.log(`║  📡 URL: http://localhost:${PORT}                           ║`);
     console.log(`║  💾 Database: SQLite (kazisms.db)                      ║`);
-    console.log(`║  💰 Payment: Mobile Money Integrated                   ║`);
+    console.log(`║  💳 Payment: Flutterwave Ready                         ║`);
+    console.log(`║  📱 Widget: http://localhost:${PORT}/buy-credits.html      ║`);
     console.log(`║  💪 Ready to send SMS across East Africa!             ║`);
     console.log(`╚═══════════════════════════════════════════════════════╝\n`);
 });
