@@ -39,25 +39,21 @@ let paymentWebhook = null;
 // Initialize everything
 const initialize = async () => {
     try {
-        // Initialize database
         await initDatabase();
         dbReady = true;
         console.log('✅ Database initialized and ready');
         
-        // Get database instance and initialize credit manager
         const { db: database } = require('./database/schema');
         db = database;
         creditManager = new CreditManager(db);
         console.log('✅ Credit manager initialized');
         
-        // Now initialize payment routes after database is ready
         const paymentRoutesModule = require('./api/paymentRoutes');
         const paymentWebhookModule = require('./api/paymentWebhook');
         
         paymentRoutes = paymentRoutesModule(db);
         paymentWebhook = paymentWebhookModule(db);
         
-        // Mount payment routes after database is ready
         app.use('/api', paymentRoutes);
         app.use('/api/payment', paymentWebhook);
         
@@ -76,11 +72,13 @@ app.get('/health', (req, res) => {
         creditManager: creditManager !== null,
         paymentRoutes: paymentRoutes !== null,
         flutterwave: process.env.FLW_SECRET_KEY ? 'configured' : 'not configured',
+        twoWaySMS: true,
+        autoReply: true,
         timestamp: new Date().toISOString(),
         service: 'KaziSMS API',
         version: '2.0.0',
         uptime: process.uptime(),
-        features: ['SMS', 'Payment', 'Credits', 'Flutterwave']
+        features: ['SMS', 'Payment', 'Credits', 'Flutterwave', 'Two-Way SMS', 'Auto-Reply']
     });
 });
 
@@ -88,18 +86,27 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
     res.json({
         name: 'KaziSMS API',
-        description: 'Lightning fast SMS API for East Africa with Flutterwave Payment Integration',
+        description: 'Lightning fast SMS API for East Africa with Two-Way SMS & Payment Integration',
         version: '2.0.0',
         status: 'operational',
         database: dbReady ? 'connected' : 'pending',
-        payment: {
-            provider: 'Flutterwave',
-            supported: ['MTN Mobile Money', 'Airtel Money', 'Card Payments'],
-            status: paymentRoutes ? 'ready' : 'initializing'
+        features: {
+            sms_sending: true,
+            two_way_sms: true,
+            auto_reply: true,
+            payment: {
+                provider: 'Flutterwave',
+                supported: ['MTN Mobile Money', 'Airtel Money', 'Card Payments'],
+                status: paymentRoutes ? 'ready' : 'initializing'
+            }
         },
         endpoints: {
             send_sms: 'POST /v1/sms/send',
             get_messages: 'GET /v1/messages',
+            get_incoming: 'GET /v1/messages/incoming',
+            reply_sms: 'POST /v1/sms/reply',
+            auto_reply: 'POST /v1/auto-reply/configure',
+            get_auto_reply: 'GET /v1/auto-reply/rules',
             get_stats: 'GET /v1/stats',
             get_balance: 'GET /v1/balance',
             carrier_lookup: 'GET /v1/lookup/:phone',
@@ -107,12 +114,237 @@ app.get('/', (req, res) => {
             buy_credits: 'POST /api/buy-credits',
             check_balance: 'GET /api/balance/:phoneNumber',
             transaction_history: 'GET /api/transactions/:phoneNumber',
+            test_incoming: 'POST /api/test/incoming',
+            webhook: 'POST /api/sms-webhook',
             payment_widget: 'GET /buy-credits.html'
         }
     });
 });
 
-// Temporary payment endpoints (will be replaced when database is ready)
+// ============ TWO-WAY SMS ENDPOINTS ============
+
+// Test endpoint to simulate incoming SMS (for development)
+app.post('/api/test/incoming', async (req, res) => {
+    const { from, to, message } = req.body;
+    
+    if (!from || !message) {
+        return res.status(400).json({ 
+            success: false, 
+            error: { message: 'from and message are required' }
+        });
+    }
+    
+    const messageId = 'TEST_IN_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+    const carrierInfo = getCarrierInfo(from);
+    
+    const incomingMessage = {
+        message_id: messageId,
+        from_number: from,
+        to_number: to || 'KaziSMS',
+        message: message,
+        carrier: carrierInfo.carrier || 'Test',
+        status: 'received'
+    };
+    
+    try {
+        await dbHelpers.saveIncomingMessage(incomingMessage);
+        console.log(`📨 Test incoming SMS from ${from}: ${message}`);
+        
+        // Check for auto-reply
+        const lowerMessage = message.toLowerCase();
+        const rules = await dbHelpers.getAutoReplyRules(true);
+        let autoReplied = false;
+        
+        for (const rule of rules) {
+            if (lowerMessage.includes(rule.keyword.toLowerCase())) {
+                const replyId = 'REPLY_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+                const replyCost = Math.ceil(rule.response.length / 160) * 50;
+                
+                const user = await creditManager.getUser(from);
+                const balance = await creditManager.getBalance(user.user_id);
+                
+                if (balance >= replyCost) {
+                    await creditManager.deductCredits(user.user_id, replyCost, replyId, from, rule.response);
+                    await dbHelpers.markIncomingProcessed(messageId, replyId);
+                    autoReplied = true;
+                    console.log(`🤖 Auto-reply sent for keyword: ${rule.keyword}`);
+                }
+                break;
+            }
+        }
+        
+        res.json({
+            success: true,
+            message_id: messageId,
+            from: from,
+            message: message,
+            auto_replied: autoReplied,
+            note: 'Test incoming message saved.'
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: { message: error.message } });
+    }
+});
+
+// Get incoming messages
+app.get('/v1/messages/incoming', async (req, res) => {
+    const limit = parseInt(req.query.limit) || 100;
+    const processed = req.query.processed === 'true' ? true : 
+                     req.query.processed === 'false' ? false : null;
+    
+    try {
+        const messages = await dbHelpers.getIncomingMessages(limit, processed);
+        res.json({
+            success: true,
+            count: messages.length,
+            messages: messages
+        });
+    } catch (error) {
+        console.error('Failed to get incoming messages:', error);
+        res.status(500).json({
+            success: false,
+            error: { message: error.message }
+        });
+    }
+});
+
+// Reply to an incoming message
+app.post('/v1/sms/reply', async (req, res) => {
+    const { to, message, original_message_id, from } = req.body;
+    
+    if (!creditManager) {
+        return res.status(503).json({
+            success: false,
+            error: { message: 'Credit system initializing.' }
+        });
+    }
+    
+    if (!to || !message) {
+        return res.status(400).json({
+            success: false,
+            error: { message: 'to and message are required' }
+        });
+    }
+    
+    const phoneValidation = validatePhoneNumber(to);
+    if (!phoneValidation.valid) {
+        return res.status(400).json({
+            success: false,
+            error: { message: phoneValidation.error }
+        });
+    }
+    
+    const messageId = 'REPLY_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
+    const messageParts = Math.ceil(message.length / 160);
+    const cost = messageParts * 50;
+    
+    try {
+        const user = await creditManager.getUser(to);
+        const balance = await creditManager.getBalance(user.user_id);
+        
+        if (balance < cost) {
+            return res.status(402).json({
+                success: false,
+                error: {
+                    code: 'INSUFFICIENT_CREDITS',
+                    message: `Need ${cost} UGX, available: ${balance} UGX`,
+                    buy_url: '/buy-credits.html'
+                }
+            });
+        }
+        
+        const deduction = await creditManager.deductCredits(
+            user.user_id, cost, messageId, phoneValidation.normalized, message
+        );
+        
+        if (original_message_id) {
+            await dbHelpers.markIncomingProcessed(original_message_id, messageId);
+        }
+        
+        console.log(`📤 Reply sent: ${messageId} to ${phoneValidation.normalized}`);
+        
+        res.json({
+            success: true,
+            data: {
+                message_id: messageId,
+                type: 'reply',
+                to: phoneValidation.normalized,
+                message: message,
+                cost: cost,
+                balance_before: balance,
+                balance_after: deduction.new_balance
+            }
+        });
+    } catch (error) {
+        console.error('Reply error:', error);
+        res.status(500).json({
+            success: false,
+            error: { message: error.message }
+        });
+    }
+});
+
+// Configure auto-reply rule
+app.post('/v1/auto-reply/configure', async (req, res) => {
+    const { keyword, response, enabled = true } = req.body;
+    
+    if (!keyword || !response) {
+        return res.status(400).json({
+            success: false,
+            error: { message: 'keyword and response are required' }
+        });
+    }
+    
+    try {
+        const rule = await dbHelpers.saveAutoReplyRule({ keyword, response, enabled });
+        res.json({
+            success: true,
+            rule: rule,
+            message: `Auto-reply rule for "${keyword}" configured successfully`
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: { message: error.message }
+        });
+    }
+});
+
+// Get auto-reply rules
+app.get('/v1/auto-reply/rules', async (req, res) => {
+    try {
+        const rules = await dbHelpers.getAutoReplyRules(true);
+        res.json({
+            success: true,
+            rules: rules
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: { message: error.message }
+        });
+    }
+});
+
+// Webhook endpoint for receiving SMS (for your web app)
+app.post('/api/sms-webhook', async (req, res) => {
+    const { event, data } = req.body;
+    
+    console.log(`📨 Webhook received: ${event}`);
+    
+    if (event === 'sms.received') {
+        console.log(`📱 New SMS from ${data.from}: ${data.message}`);
+        res.json({ 
+            status: 'received',
+            message: `SMS from ${data.from} processed`
+        });
+    } else {
+        res.json({ status: 'ignored' });
+    }
+});
+
+// ============ PAYMENT & CREDIT ENDPOINTS ============
+
 app.post('/api/buy-credits', async (req, res) => {
     if (!creditManager) {
         return res.status(503).json({
@@ -173,7 +405,6 @@ app.post('/api/buy-credits', async (req, res) => {
     }
 });
 
-// Temporary balance endpoint
 app.get('/api/balance/:phoneNumber', async (req, res) => {
     const { phoneNumber } = req.params;
     
@@ -213,7 +444,6 @@ app.get('/api/balance/:phoneNumber', async (req, res) => {
     }
 });
 
-// Temporary transaction history endpoint
 app.get('/api/transactions/:phoneNumber', async (req, res) => {
     const { phoneNumber } = req.params;
     const limit = parseInt(req.query.limit) || 50;
@@ -249,9 +479,8 @@ app.get('/api/transactions/:phoneNumber', async (req, res) => {
     }
 });
 
-// ============ SMS ENDPOINTS WITH CREDIT DEDUCTION ============
+// ============ SMS ENDPOINTS ============
 
-// SMS send endpoint with credit deduction
 app.post('/v1/sms/send', async (req, res) => {
     const { to, message, from, phoneNumber } = req.body;
     
@@ -285,7 +514,6 @@ app.post('/v1/sms/send', async (req, res) => {
         });
     }
     
-    // Validate phone number
     const phoneValidation = validatePhoneNumber(to);
     if (!phoneValidation.valid) {
         return res.status(400).json({
@@ -297,12 +525,10 @@ app.post('/v1/sms/send', async (req, res) => {
         });
     }
     
-    // Calculate cost (50 UGX per 160 characters)
     const messageParts = Math.ceil(message.length / 160);
     const cost = messageParts * 50;
     
     try {
-        // Get user and check balance
         const user = await creditManager.getUser(phoneNumber);
         const balance = await creditManager.getBalance(user.user_id);
         
@@ -319,16 +545,9 @@ app.post('/v1/sms/send', async (req, res) => {
             });
         }
         
-        // Generate unique message ID
         const messageId = 'KAZI_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
-        
-        // Deduct credits
         const deduction = await creditManager.deductCredits(
-            user.user_id, 
-            cost, 
-            messageId, 
-            phoneValidation.normalized, 
-            message
+            user.user_id, cost, messageId, phoneValidation.normalized, message
         );
         
         console.log(`📱 SMS sent: ${messageId} to ${phoneValidation.normalized}`);
@@ -371,7 +590,6 @@ app.post('/v1/sms/send', async (req, res) => {
 
 // ============ EXISTING ENDPOINTS ============
 
-// Get all messages endpoint
 app.get('/v1/messages', async (req, res) => {
     const limit = parseInt(req.query.limit) || 100;
     
@@ -394,7 +612,6 @@ app.get('/v1/messages', async (req, res) => {
     }
 });
 
-// Get single message status
 app.get('/v1/sms/:id', async (req, res) => {
     const { id } = req.params;
     
@@ -425,15 +642,18 @@ app.get('/v1/sms/:id', async (req, res) => {
     }
 });
 
-// Get statistics
 app.get('/v1/stats', async (req, res) => {
     try {
         const messages = await dbHelpers.getAllMessages(1000);
+        const incoming = await dbHelpers.getIncomingMessages(1000);
+        
         const stats = {
             total: messages.length,
             queued: messages.filter(m => m.status === 'queued').length,
             delivered: messages.filter(m => m.status === 'delivered').length,
             failed: messages.filter(m => m.status === 'failed').length,
+            incoming: incoming.length,
+            unprocessed_incoming: incoming.filter(m => !m.processed).length,
             by_carrier: {}
         };
         
@@ -460,7 +680,6 @@ app.get('/v1/stats', async (req, res) => {
     }
 });
 
-// Balance endpoint (legacy)
 app.get('/v1/balance', async (req, res) => {
     res.json({
         success: true,
@@ -472,7 +691,6 @@ app.get('/v1/balance', async (req, res) => {
     });
 });
 
-// Carrier lookup
 app.get('/v1/lookup/:phone', (req, res) => {
     const { phone } = req.params;
     const carrierInfo = getCarrierInfo(phone);
@@ -483,7 +701,6 @@ app.get('/v1/lookup/:phone', (req, res) => {
     });
 });
 
-// API Info endpoint
 app.get('/v1/info', (req, res) => {
     res.json({
         success: true,
@@ -494,13 +711,15 @@ app.get('/v1/info', (req, res) => {
             database: dbReady ? 'connected' : 'pending',
             payment_enabled: true,
             payment_provider: 'Flutterwave',
+            two_way_sms: true,
+            auto_reply: true,
             supported_countries: ['Uganda', 'Kenya', 'Tanzania', 'Rwanda', 'Burundi'],
-            features: ['2-way SMS', 'Bulk SMS', 'Database Storage', 'Message History', 'Flutterwave Payments', 'Credit System']
+            features: ['2-way SMS', 'Bulk SMS', 'Database Storage', 'Message History', 'Flutterwave Payments', 'Credit System', 'Auto-Reply']
         }
     });
 });
 
-// Start initialization and then start server
+// Start initialization
 initialize();
 
 // 404 handler
@@ -515,6 +734,10 @@ app.use((req, res) => {
                 'GET /health',
                 'POST /v1/sms/send',
                 'GET /v1/messages',
+                'GET /v1/messages/incoming',
+                'POST /v1/sms/reply',
+                'POST /v1/auto-reply/configure',
+                'GET /v1/auto-reply/rules',
                 'GET /v1/stats',
                 'GET /v1/balance',
                 'GET /v1/info',
@@ -523,6 +746,8 @@ app.use((req, res) => {
                 'POST /api/buy-credits',
                 'GET /api/balance/:phoneNumber',
                 'GET /api/transactions/:phoneNumber',
+                'POST /api/test/incoming',
+                'POST /api/sms-webhook',
                 'GET /buy-credits.html'
             ]
         }
@@ -549,6 +774,8 @@ app.listen(PORT, () => {
     console.log(`║  📡 URL: http://localhost:${PORT}                           ║`);
     console.log(`║  💾 Database: SQLite (kazisms.db)                      ║`);
     console.log(`║  💳 Payment: Flutterwave Ready                         ║`);
+    console.log(`║  📨 Two-Way SMS: ENABLED                               ║`);
+    console.log(`║  🤖 Auto-Reply: Active                                 ║`);
     console.log(`║  📱 Widget: http://localhost:${PORT}/buy-credits.html      ║`);
     console.log(`║  💪 Ready to send SMS across East Africa!             ║`);
     console.log(`╚═══════════════════════════════════════════════════════╝\n`);
