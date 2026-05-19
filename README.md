@@ -97,7 +97,26 @@ cp .env.example .env
 # Edit .env with your settings
 
 # Start the API server
-npm start
+npm 
+
+## 📄 License
+
+Distributed under the MIT License. See `LICENSE` for more information.
+
+Copyright © 2026 Kosea Erasto (kmuwanga83)
+
+---
+
+## 👨‍💻 Author
+
+**Kosea Erasto**
+- GitHub: [@kmuwanga83](https://github.com/kmuwanga83)
+- Copyright: © 2026 SemaSMS
+
+---
+
+**Built with ❤️ for East Africa | SemaSMS - Speak SMS**
+Copyright © 2026. All Rights Reserved.
 
 # In another terminal, start the SMSC server
 npm run smsc
