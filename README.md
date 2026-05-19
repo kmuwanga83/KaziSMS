@@ -98,6 +98,8 @@ cp .env.example .env
 
 # Start the API server
 npm 
+# In another terminal, start the SMSC server
+npm run smsc
 
 ## 📄 License
 
@@ -118,5 +120,3 @@ Copyright © 2026 Kosea Erasto (kmuwanga83)
 **Built with ❤️ for East Africa | SemaSMS - Speak SMS**
 Copyright © 2026. All Rights Reserved.
 
-# In another terminal, start the SMSC server
-npm run smsc
